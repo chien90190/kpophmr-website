@@ -2,7 +2,8 @@
 // folder, data-viewer3d-at where the panel sits (a class on .world3d), data-vid the clip to show; the element fires
 // "clip" when data-vid changes. The clip's video is the clock: each frame shows the meshes for its current time, so
 // playback, pausing and seeking carry over. Without the 3D (VIEWER_3D false, no WebGL, file://) the video's own view
-// shows. The badge and a loading chip show at once, over the video, until the clip's data is in. On a phone the 3D
+// shows. The badge and a loading chip show at once, over the video, until the clip's data is in; the data is fetched
+// once the clip's video shows a frame (videoFirst), so the two do not compete for the connection. On a phone the 3D
 // is its own panel under the player instead, opened by a button, and its data is fetched only then; it renders
 // lighter there (no antialiasing, smaller and harder shadows, at most 1.5x pixels) to spare the phone's GPU. If the
 // GPU drops the context, the panel shows a message and a restart.
@@ -16,10 +17,20 @@ const DRAG_HINT = 'Drag to rotate<span class="w3d-more">, scroll to zoom</span>'
 const PHONE = matchMedia("(max-width: 768px)").matches;
 const CUBE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z"/><path d="M3.5 7 12 11.5 20.5 7M12 11.5v10"/></svg>';
 
-// fn() once the page has loaded and the browser is idle
-function whenIdle(fn) {
-  const go = () => (window.requestIdleCallback ?? (f => setTimeout(f, 300)))(fn);
-  document.readyState === "complete" ? go() : addEventListener("load", go, { once: true });
+// Resolves once a video of clip `id` in host shows a frame, or fails to load: a clip's video loads before its 3D data.
+function videoFirst(host, id) {
+  const ready = () => [...host.querySelectorAll("video")].some(v => v.src.includes(id) && v.readyState >= 2);
+  if (ready()) return Promise.resolve();
+  return new Promise(res => {
+    const check = e => {
+      if (e.type === "error" ? !e.target.src?.includes(id) : !ready()) return;
+      host.removeEventListener("loadeddata", check, true);
+      host.removeEventListener("error", check, true);
+      res();
+    };
+    host.addEventListener("loadeddata", check, true);  // media events do not bubble, so listen in the capture phase
+    host.addEventListener("error", check, true);
+  });
 }
 
 // The response body as an ArrayBuffer, calling onProgress(fraction) as it arrives (never without a length).
@@ -175,6 +186,8 @@ function mountViewer(host, below, restart) {
     paint();
     let data;
     try {
+      if (!cache.has(id)) await videoFirst(host, id);
+      if (want !== id) return;  // another clip was picked meanwhile
       data = await fetchClip(id);
     } catch (e) {
       if (want === id) { want = null; wrap.classList.add("off"); }  // no data for this clip: the video's own view stays
@@ -227,8 +240,7 @@ function mountViewer(host, below, restart) {
   host.addEventListener("clip", () => show(host.dataset.vid), { signal: off.signal });
   // "prefetch" (detail: a clip id) fetches a clip's data without showing it, e.g. on hovering its thumbnail
   host.addEventListener("prefetch", e => fetchClip(e.detail).catch(() => { }), { signal: off.signal });
-  // the opening clip (data-vid) is fetched once the page is idle and shown once the player comes near the viewport
-  whenIdle(() => host.dataset.vid && fetchClip(host.dataset.vid).catch(() => { }));
+  // the opening clip (data-vid) is fetched and shown once the player comes near the viewport and its video is in
   onceInView(host, () => host.dataset.vid && show(host.dataset.vid), "600px 0px");
   return wrap;
 }

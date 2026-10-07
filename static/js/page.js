@@ -17,14 +17,18 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   }, "-45% 0px -50% 0px");
 })();
 
-// ---- hero: a wall of six tiles cycling through the HERO_WALL clips, playing only while in view ----
+// ---- hero: a wall of six tiles (four on a phone, which hides the rest) cycling through the HERO_WALL clips, playing
+// only while in view; each shows its clip's first frame (<id>_ours.jpg) until the clip loads ----
 (() => {
   const wall = document.getElementById("hero-wall");
-  const vids = Array.from({ length: 6 }, (_, i) => HERO_WALL[i % HERO_WALL.length]).map((t, i) => {
+  const tiles = matchMedia("(max-width: 768px)").matches ? 4 : 6;
+  const vids = Array.from({ length: tiles }, (_, i) => HERO_WALL[i % HERO_WALL.length]).map((t, i) => {
     const tile = document.createElement("div");
     tile.className = "tile";
     const v = document.createElement("video");
-    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true; v.preload = "auto";
+    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true;
+    v.preload = reducedMotion ? "none" : "auto";  // reduced motion: the stills alone
+    v.poster = `${t.dir}/${t.id}_ours.jpg`;
     v.addEventListener("loadedmetadata", () => { v.currentTime = (i * 0.37) % Math.max(0.1, v.duration); }, { once: true });
     v.addEventListener("error", () => v.remove(), { once: true });
     v.src = `${t.dir}/${t.id}_ours.mp4`;
@@ -36,9 +40,11 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   whileInView(document.querySelector(".hero"), inView => vids.forEach(v => (inView ? v.play().catch(() => { }) : v.pause())));
 })();
 
-// ---- standalone clips (video[data-src]): load near the viewport, play only while visible ----
+// ---- standalone clips (video[data-src], with a still in data-poster): load near the viewport, play only while
+// visible ----
 for (const v of document.querySelectorAll("video[data-src]")) whileInView(v, inView => {
   if (inView && !v.src) {
+    if (v.dataset.poster) v.poster = v.dataset.poster;
     v.addEventListener("error", () => v.replaceWith(placeholder(v.dataset.src, "16 / 9")), { once: true });
     v.src = v.dataset.src;
   }

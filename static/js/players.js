@@ -136,6 +136,7 @@ function buildPicker(host, items, thumbPath, onPick) {
     b.setAttribute("aria-label", `Example ${i + 1}`);
     const img = document.createElement("img");
     img.alt = "";
+    img.loading = "lazy";
     img.addEventListener("error", () => {
       img.remove();
       b.classList.add("empty");
@@ -183,9 +184,15 @@ function wirePlayback(group, prefix) {
 const STACK_ASPECT = "25 / 18";  // two 2000x720 clips stacked; the files may be scaled (stackCanvas reads videoWidth)
 const SPLIT = 64;                // the reprojection's share of the clip's width (1280 of 2000 px), in percent
 
-// Load one stacked clip into a .cmp player's group; its canvas draws from it (stackCanvas).
+// Load one stacked clip into a .cmp player's group; its canvas draws from it (stackCanvas). A clip from its start has
+// its first frame drawn from the poster (<clip>.jpg, half size) until it loads.
 function mountStack(el, group, path, t0 = 0) {
   el.querySelectorAll(".layer").forEach(l => l.remove());
+  el.poster = null;
+  if (!t0) {
+    el.poster = new Image();
+    el.poster.src = path.replace(/\.mp4$/, ".jpg");
+  }
   const fig = document.createElement("figure");
   fig.className = "layer";
   el.prepend(fig);  // under the canvas, tags and divider
@@ -193,7 +200,8 @@ function mountStack(el, group, path, t0 = 0) {
 }
 
 // The canvas: the other method's reprojection left of the divider, ours right of it, and the world view, all from
-// the same frame. Keeps the last frame while the next clip loads; clears for a placeholder.
+// the same frame. While the next clip loads, draws its poster if it has one, else keeps the last frame; clears for a
+// placeholder.
 function stackCanvas(el, group) {
   const canvas = document.createElement("canvas");
   canvas.className = "fill";
@@ -205,9 +213,10 @@ function stackCanvas(el, group) {
     requestAnimationFrame(draw);
     if (!group.visible || !canvas.width) return;
     if (el.querySelector(".placeholder")) return ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const v = group.master;
-    if (!v || v.readyState < 2) return;
-    const k = v.videoWidth / 2000, W = canvas.width, H = canvas.height;
+    const m = group.master, p = el.poster;
+    const v = m && m.readyState >= 2 ? m : p && p.complete && p.naturalWidth ? p : null;
+    if (!v) return;
+    const k = (v.videoWidth || v.naturalWidth) / 2000, W = canvas.width, H = canvas.height;
     const sw = W * SPLIT / 100, x = sw * +el.getAttribute("aria-valuenow") / 100;
     ctx.drawImage(v, 0, 720 * k, 1280 * k, 720 * k, 0, 0, sw, H);  // ours
     if (x >= 1) ctx.drawImage(v, 0, 0, 1280 * k * x / sw, 720 * k, 0, 0, x, H);  // the other method, left of the divider
