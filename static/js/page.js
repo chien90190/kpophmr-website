@@ -18,26 +18,40 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 })();
 
 // ---- hero: a wall of six tiles (four on a phone, which hides the rest) cycling through the HERO_WALL clips, playing
-// only while in view; each shows its clip's first frame (<id>_ours.jpg) until the clip loads ----
+// only while in view. The clips are decoration and the figures are content, so the page loads in this order: the
+// tiles' posters (<id>_ours.jpg, the first screen), then every still on the page (img loading="lazy", switched to
+// eager here), then the clips, once the stills are in or at most 4 s in. Reduced motion keeps the posters. ----
 (() => {
   const wall = document.getElementById("hero-wall");
   const tiles = matchMedia("(max-width: 768px)").matches ? 4 : 6;
-  const vids = Array.from({ length: tiles }, (_, i) => HERO_WALL[i % HERO_WALL.length]).map((t, i) => {
+  const clips = Array.from({ length: tiles }, (_, i) => HERO_WALL[i % HERO_WALL.length]);
+  const vids = clips.map((t, i) => {
     const tile = document.createElement("div");
     tile.className = "tile";
     const v = document.createElement("video");
-    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true;
-    v.preload = reducedMotion ? "none" : "auto";  // reduced motion: the stills alone
+    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true; v.preload = "auto";
     v.poster = `${t.dir}/${t.id}_ours.jpg`;
     v.addEventListener("loadedmetadata", () => { v.currentTime = (i * 0.37) % Math.max(0.1, v.duration); }, { once: true });
     v.addEventListener("error", () => v.remove(), { once: true });
-    v.src = `${t.dir}/${t.id}_ours.mp4`;
     tile.appendChild(v);
     wall.appendChild(tile);
     return v;
   });
-  if (reducedMotion) return;  // stills only
-  whileInView(document.querySelector(".hero"), inView => vids.forEach(v => (inView ? v.play().catch(() => { }) : v.pause())));
+
+  const stills = [...document.querySelectorAll('img[loading="lazy"]')].map(img => new Promise(res => {
+    img.loading = "eager";
+    if (img.complete) return res();
+    img.addEventListener("load", res, { once: true });
+    img.addEventListener("error", res, { once: true });
+  }));
+  if (reducedMotion) return;
+  let inView = false;
+  const play = () => vids.forEach(v => (inView && v.src ? v.play().catch(() => { }) : v.pause()));
+  whileInView(document.querySelector(".hero"), v => { inView = v; play(); });
+  Promise.race([Promise.all(stills), new Promise(res => setTimeout(res, 4000))]).then(() => {
+    vids.forEach((v, i) => (v.src = `${clips[i].dir}/${clips[i].id}_ours.mp4`));
+    play();
+  });
 })();
 
 // ---- standalone clips (video[data-src], with a still in data-poster): load near the viewport, play only while
