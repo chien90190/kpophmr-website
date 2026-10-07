@@ -1,10 +1,51 @@
 // Video players: the before/after and the comparison. A player with an interactive 3D view keeps its
 // current clip id in data-vid and fires a "clip" event when it changes, and "prefetch" (detail: a clip id) for a clip
-// it may show next.
+// it may show next. Clips the reader is likely to pick next are fetched ahead (fetchAhead), and a clip a player moves
+// off is kept, so going back to it plays at once.
 
 // ===========================================================================
 // Shared parts
 // ===========================================================================
+
+// Video elements by path, fetched ahead or put back by a player, handed to the next mount of that path. The
+// POOL most recent are kept; an older one is emptied.
+const POOL = 8, pool = new Map();
+function newVideo(path) {
+  const v = document.createElement("video");
+  v.muted = true;
+  v.playsInline = true;
+  v.disablePictureInPicture = true;
+  v.preload = "auto";
+  v.dataset.path = path;
+  v.src = path;
+  return v;
+}
+function takeVideo(path) {
+  const v = pool.get(path);
+  pool.delete(path);
+  return v || newVideo(path);
+}
+function stash(v) {
+  v.pause();
+  pool.delete(v.dataset.path);
+  pool.set(v.dataset.path, v);
+  for (const [path, old] of pool) {
+    if (pool.size <= POOL) break;
+    pool.delete(path);
+    old.removeAttribute("src");
+    old.load();
+  }
+}
+// Queue the clip at `path` behind what is on screen (see ahead); `first` puts it at the front. Returns a promise that
+// settles once it is in. A clip already in a player is not fetched again, but the queue still waits for it.
+function fetchAhead(path, first = false) {
+  return ahead.add(() => {
+    const shown = document.querySelector(`video[data-path="${path}"]`);
+    if (shown?.isConnected) return whenSettled(shown);
+    if (!pool.has(path)) stash(newVideo(path));
+    return whenSettled(pool.get(path));
+  }, first);
+}
 
 // A set of videos that play as one: the longest clip is the clock, the rest follow it,
 // and the whole group pauses while scrolled out of view. `bar` shows the clock's progress, and its track
@@ -41,24 +82,24 @@ class SyncGroup {
     this.halt();
     this.videos = [];
     this.master = null;
+    if (this.off) this.off.abort();  // the listeners of the last mount, whose videos may come back from the pool
+    const signal = (this.off = new AbortController()).signal;
     const loads = slots.map(({ fig, path }) => new Promise(res => {
-      const v = document.createElement("video");
-      v.muted = true;
-      v.playsInline = true;
-      v.disablePictureInPicture = true;
-      v.preload = "auto";
+      const v = takeVideo(path);  // fetched ahead or kept from before, else new
       v.style.aspectRatio = `auto ${aspect}`;
-      v.addEventListener("loadeddata", () => res(v), { once: true });
-      v.addEventListener("error", () => { v.replaceWith(placeholder(path, aspect)); res(null); }, { once: true });
+      const fail = () => { v.replaceWith(placeholder(path, aspect)); res(null); };
       fig.prepend(v);
-      v.src = path;
+      if (v.error) return fail();
+      if (v.readyState >= 2) return res(v);
+      v.addEventListener("loadeddata", () => res(v), { once: true, signal });
+      v.addEventListener("error", fail, { once: true, signal });
     }));
     Promise.all(loads).then(loaded => {
       if (token !== this.token) return;
       this.videos = loaded.filter(Boolean);
       if (!this.videos.length) return;
       this.master = this.videos.reduce((a, b) => (b.duration > a.duration ? b : a));
-      this.master.addEventListener("ended", () => { if (this.playing) { this.seek(0); this.run(); } });
+      this.master.addEventListener("ended", () => { if (this.playing) { this.seek(0); this.run(); } }, { signal });
       for (const v of this.videos) v.playbackRate = this.rate;
       this.seek(t0);
       this.set(this.playing);
@@ -187,6 +228,7 @@ const SPLIT = 64;                // the reprojection's share of the clip's width
 // Load one stacked clip into a .cmp player's group; its canvas draws from it (stackCanvas). A clip from its start has
 // its first frame drawn from the poster (<clip>.jpg, half size) until it loads.
 function mountStack(el, group, path, t0 = 0) {
+  el.querySelectorAll(".layer video").forEach(stash);  // kept, so going back to it plays at once
   el.querySelectorAll(".layer").forEach(l => l.remove());
   el.poster = null;
   if (!t0) {
@@ -255,8 +297,9 @@ function wipe(el) {
   const ba = document.getElementById("ba");
   const group = new SyncGroup(ba, null, document.getElementById("ba-bar"));
   const stats = document.getElementById("ba-stats");
+  const path = i => `${BA[i].dir}/${BA[i].id}_opt_stack.mp4`;
   const pick = i => {
-    mountStack(ba, group, `${BA[i].dir}/${BA[i].id}_opt_stack.mp4`);
+    mountStack(ba, group, path(i));
     mark(i);
     stats.innerHTML = `This clip's camera <span class="pill">${BA[i].speed.toFixed(1)} body/s</span>
       <span class="pill">${Math.round(BA[i].turn)}&deg;/s</span> median speed (body lengths per second) and turn rate.`;
@@ -266,11 +309,14 @@ function wipe(el) {
   const thumbs = document.getElementById("ba-thumbs");
   const mark = buildPicker(thumbs, BA, c => `${c.dir}/${c.id}_thumb.jpg`, pick);
   ba.dataset.vid = BA[0].id;  // the opening clip, so its 3D data can be fetched before the player mounts it
-  // hovering a thumbnail fetches that clip's 3D data
+  // hovering a thumbnail fetches that clip's video, then its 3D data
   thumbs.addEventListener("pointerover", e => {
     const b = e.target.closest(".thumb");
-    if (b) ba.dispatchEvent(new CustomEvent("prefetch", { detail: BA[[...thumbs.children].indexOf(b)].id }));
+    if (!b || b.classList.contains("active")) return;
+    const i = [...thumbs.children].indexOf(b);
+    fetchAhead(path(i), true).then(() => ba.dispatchEvent(new CustomEvent("prefetch", { detail: BA[i].id })));
   });
+  fetchAhead(path(0));  // the opening clip, if the player has not mounted it by the time the queue starts
   wipe(ba);
   stackCanvas(ba, group);
   wirePlayback(group, "ba");
@@ -304,16 +350,27 @@ function wipe(el) {
     tag.textContent = BASELINES[i].name;
     key.innerHTML = `<i class="dot-ours"></i><b>Ours</b><i class="dot-base"></i><b>${BASELINES[i].name}</b>`;
     verdict.innerHTML = `${BASELINES[i].says} Ours aligns in 2D and stays stable in world space.`;
-    mountStack(cmp, group, `${CMP[clipIdx].dir}/${CMP[clipIdx].id}_${BASELINES[i].key}_stack.mp4`,
-      group.master ? group.master.currentTime : 0);
+    mountStack(cmp, group, path(clipIdx, i), group.master ? group.master.currentTime : 0);
   }
+  const path = (c, b) => `${CMP[c].dir}/${CMP[c].id}_${BASELINES[b].key}_stack.mp4`;
+  // the clip's other baselines, the likely next tabs, at the front of the queue
+  const otherTabs = c => BASELINES.forEach((_, b) => b !== baseIdx && fetchAhead(path(c, b), true));
   const pick = i => {
     clipIdx = i;
     group.master = null;  // a new clip starts from the beginning
     showBase(baseIdx);
     mark(i);
+    otherTabs(i);
   };
-  const mark = buildPicker(document.getElementById("cmp-thumbs"), CMP, c => `${c.dir}/${c.id}_thumb.jpg`, pick);
+  const thumbs = document.getElementById("cmp-thumbs");
+  const mark = buildPicker(thumbs, CMP, c => `${c.dir}/${c.id}_thumb.jpg`, pick);
+  // hovering a thumbnail fetches that clip on the open tab
+  thumbs.addEventListener("pointerover", e => {
+    const b = e.target.closest(".thumb");
+    if (b && !b.classList.contains("active")) fetchAhead(path([...thumbs.children].indexOf(b), baseIdx), true);
+  });
+  fetchAhead(path(0, 0));  // the opening clip and its other tabs, before the reader gets there
+  BASELINES.forEach((_, b) => b && fetchAhead(path(0, b)));
   wipe(cmp);
   stackCanvas(cmp, group);
   wirePlayback(group, "cmp");

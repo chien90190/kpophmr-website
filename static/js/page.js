@@ -20,7 +20,9 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 // ---- hero: a wall of six tiles (four on a phone, which hides the rest) cycling through the HERO_WALL clips, playing
 // only while in view. The clips are decoration and the figures are content, so the page loads in this order: the
 // tiles' posters (<id>_ours.jpg, the first screen), then every still on the page (img loading="lazy", switched to
-// eager here), then the clips, once the stills are in or at most 4 s in. Reduced motion keeps the posters. ----
+// eager here), then the queue of downloads ahead (ahead, common.js; at most 4 s in): first these clips, once any
+// player's clip still loading is in (sharing the connection, the 9 Mbps before/after stalled), a clip shown twice
+// fetched once (the second copy from the cache), then the players' next clips. Reduced motion keeps the posters. ----
 (() => {
   const wall = document.getElementById("hero-wall");
   const tiles = matchMedia("(max-width: 768px)").matches ? 4 : 6;
@@ -44,26 +46,35 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     img.addEventListener("load", res, { once: true });
     img.addEventListener("error", res, { once: true });
   }));
+  Promise.race([Promise.all(stills), new Promise(res => setTimeout(res, 4000))]).then(ahead.start);
   if (reducedMotion) return;
   let inView = false;
   const play = () => vids.forEach(v => (inView && v.src ? v.play().catch(() => { }) : v.pause()));
   whileInView(document.querySelector(".hero"), v => { inView = v; play(); });
-  Promise.race([Promise.all(stills), new Promise(res => setTimeout(res, 4000))]).then(() => {
-    vids.forEach((v, i) => (v.src = `${clips[i].dir}/${clips[i].id}_ours.mp4`));
-    play();
-  });
+  const load = i => { vids[i].src = `${clips[i].dir}/${clips[i].id}_ours.mp4`; play(); return whenSettled(vids[i]); };
+  ahead.add(async () => {
+    for (let k = 0; k < 2; k++) await new Promise(requestAnimationFrame);  // a player near the viewport has mounted
+    await Promise.all([...document.querySelectorAll(".cmp video")].map(whenSettled));
+    await Promise.all(vids.map((_, i) => i < HERO_WALL.length ? load(i) : null));
+    await Promise.all(vids.map((_, i) => i < HERO_WALL.length ? null : load(i)));
+  }, true);
 })();
 
-// ---- standalone clips (video[data-src], with a still in data-poster): load near the viewport, play only while
-// visible ----
-for (const v of document.querySelectorAll("video[data-src]")) whileInView(v, inView => {
-  if (inView && !v.src) {
+// ---- standalone clips (video[data-src], with a still in data-poster): fetched ahead (after the players' clips) or
+// when near the viewport, whichever comes first; play only while visible ----
+for (const v of document.querySelectorAll("video[data-src]")) {
+  const load = () => {
+    if (v.src) return;
     if (v.dataset.poster) v.poster = v.dataset.poster;
     v.addEventListener("error", () => v.replaceWith(placeholder(v.dataset.src, "16 / 9")), { once: true });
     v.src = v.dataset.src;
-  }
-  inView ? v.play().catch(() => { }) : v.pause();
-}, "300px 0px");
+  };
+  ahead.add(() => { load(); return whenSettled(v); });
+  whileInView(v, inView => {
+    if (inView) load();
+    inView ? v.play().catch(() => { }) : v.pause();
+  }, "300px 0px");
+}
 
 // ---- dataset charts: columns from DATASET_STATS, growing in left to right when in view ----
 (() => {

@@ -3,7 +3,7 @@
 // "clip" when data-vid changes. The clip's video is the clock: each frame shows the meshes for its current time, so
 // playback, pausing and seeking carry over. Without the 3D (VIEWER_3D false, no WebGL, file://) the video's own view
 // shows. The badge and a loading chip show at once, over the video, until the clip's data is in; the data is fetched
-// once the clip's video shows a frame (videoFirst), so the two do not compete for the connection. On a phone the 3D
+// once the clip's video has finished downloading (videoFirst), so the two do not compete for the connection. On a phone the 3D
 // is its own panel under the player instead, opened by a button, and its data is fetched only then; it renders
 // lighter there (no antialiasing, smaller and harder shadows, at most 1.5x pixels) to spare the phone's GPU. If the
 // GPU drops the context, the panel shows a message and a restart.
@@ -17,20 +17,13 @@ const DRAG_HINT = 'Drag to rotate<span class="w3d-more">, scroll to zoom</span>'
 const PHONE = matchMedia("(max-width: 768px)").matches;
 const CUBE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z"/><path d="M3.5 7 12 11.5 20.5 7M12 11.5v10"/></svg>';
 
-// Resolves once a video of clip `id` in host shows a frame, or fails to load: a clip's video loads before its 3D data.
-function videoFirst(host, id) {
-  const ready = () => [...host.querySelectorAll("video")].some(v => v.src.includes(id) && v.readyState >= 2);
-  if (ready()) return Promise.resolve();
-  return new Promise(res => {
-    const check = e => {
-      if (e.type === "error" ? !e.target.src?.includes(id) : !ready()) return;
-      host.removeEventListener("loadeddata", check, true);
-      host.removeEventListener("error", check, true);
-      res();
-    };
-    host.addEventListener("loadeddata", check, true);  // media events do not bubble, so listen in the capture phase
-    host.addEventListener("error", check, true);
-  });
+// Resolves once the video of clip `id` in host has finished downloading (whenSettled, common.js): the 3D sits over
+// the video's own world view, so the video plays first and the 3D data never competes with it for the connection.
+async function videoFirst(host, id) {
+  let v;
+  while (!(v = [...host.querySelectorAll("video")].find(x => x.src.includes(id))))
+    await new Promise(res => setTimeout(res, 250));  // the player has not mounted it yet
+  await whenSettled(v);
 }
 
 // The response body as an ArrayBuffer, calling onProgress(fraction) as it arrives (never without a length).
