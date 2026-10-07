@@ -275,6 +275,31 @@ function phoneButton(host) {
 // On a larger screen: the panel over the player; a restart mounts a new one.
 const desktopViewer = host => mountViewer(host, null, () => desktopViewer(host));
 
+// Area-weighted vertex normals of an indexed geometry: the sum of the cross products of its faces' edges at each
+// vertex, normalized, exactly as three's computeVertexNormals, but on the typed arrays (it makes a Vector3 per corner,
+// which took most of the page's CPU at 24 frames a second for every body).
+function vertexNormals(g) {
+  const p = g.attributes.position.array, idx = g.index.array;
+  let attr = g.attributes.normal;
+  if (!attr) g.setAttribute("normal", attr = new THREE.BufferAttribute(new Float32Array(p.length), 3));
+  const n = attr.array;
+  n.fill(0);
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    const ux = p[c] - p[b], uy = p[c + 1] - p[b + 1], uz = p[c + 2] - p[b + 2];
+    const vx = p[a] - p[b], vy = p[a + 1] - p[b + 1], vz = p[a + 2] - p[b + 2];
+    const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+    n[a] += x; n[a + 1] += y; n[a + 2] += z;
+    n[b] += x; n[b + 1] += y; n[b + 2] += z;
+    n[c] += x; n[c + 1] += y; n[c + 2] += z;
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.sqrt(n[i] * n[i] + n[i + 1] * n[i + 1] + n[i + 2] * n[i + 2]) || 1;
+    n[i] /= l; n[i + 1] /= l; n[i + 2] /= l;
+  }
+  attr.needsUpdate = true;
+}
+
 function buildScene({ meta, buf }) {
   const V = meta.verts, F = meta.faces, s = meta.style;
   const faces = new Uint16Array(buf, 0, F * 3);
@@ -359,7 +384,7 @@ function buildScene({ meta, buf }) {
         const p = b.mesh.geometry.attributes.position;
         p.array.set(b.abs.subarray(k * V * 3, (k + 1) * V * 3));
         p.needsUpdate = true;
-        b.mesh.geometry.computeVertexNormals();
+        vertexNormals(b.mesh.geometry);
       }
       const pts = [];
       for (let g = Math.max(0, f - s.trail_frames); g <= f; g++) { const kk = b.lookup.get(g); if (kk !== undefined) pts.push(b.t.floor[kk]); }
